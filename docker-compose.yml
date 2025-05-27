@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  mqtt_broker:
+    image: eclipse-mosquitto:2.0
+    container_name: mqtt_broker
+    ports:
+      - "1883:1883"
+    restart: unless-stopped
+    networks:
+      - benchnet
+
+  service_a:
+    build:
+      context: ./
+      dockerfile: services/mqtt/service_a/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+      - LIST_SIZE=5
+    networks:
+      - benchnet
+
+  service_b:
+    build:
+      context: ./
+      dockerfile: services/mqtt/service_b/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+      - LIST_SIZE=5
+    networks:
+      - benchnet
+
+  service_c:
+    build:
+      context: ./
+      dockerfile: services/mqtt/service_c/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+      - LIST_SIZE=5
+    networks:
+      - benchnet
+
+  service_d:
+    build:
+      context: ./
+      dockerfile: services/mqtt/service_d/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+    networks:
+      - benchnet
+
+  service_e:
+    build:
+      context: ./
+      dockerfile: services/mqtt/service_e/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+    networks:
+      - benchnet
+
+  listgener:
+    build:
+      context: ./
+      dockerfile: services/mqtt/listgener/Dockerfile
+    depends_on:
+      - mqtt_broker
+    environment:
+      - MQTT_BROKER=mqtt_broker
+    networks:
+      - benchnet
+
+networks:
+  benchnet:
+    driver: bridge

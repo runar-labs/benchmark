@@ -1,0 +1,109 @@
+//! Service A for MQTT benchmark
+//
+// Intention: Generates 5,000 random Profile records. For each profile, sends to Service B and C for enrichment, collects Account and ServiceRecord lists, aggregates, and forwards to Service D.
+//
+// Architectural boundaries:
+// - Communicates only via MQTT broker (no direct service-to-service communication)
+// - All data types are defined in services/common/types.rs
+// - List sizes in downstream services are controlled by the LIST_SIZE env var (default: 5)
+// - Handles errors and logs all major steps
+//
+// This implementation demonstrates the intended inter-service workflow for benchmarking.
+
+use std::collections::HashMap;
+use std::env;
+use std::time::Duration;
+use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Packet};
+use serde_json;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
+use services::common::types::{Profile, Account, ServiceRecord, AggregatedData};
+use rand::{Rng, thread_rng, distributions::Alphanumeric};
+
+const PROFILE_COUNT: usize = 5000;
+const MQTT_BROKER: &str = "mqtt_broker";
+const MQTT_PORT: u16 = 1883;
+const TIMEOUT_MS: u64 = 5000;
+
+fn random_profile() -> Profile {
+    let mut rng = thread_rng();
+    let name: String = (0..8).map(|_| rng.sample(Alphanumeric) as char).collect();
+    let email = format!("{}@example.com", name);
+    let age = rng.gen_range(18..70);
+    Profile { name, email, age }
+}
+
+#[tokio::main]
+async fn main() {
+    println!("[Service A] Starting with {} profiles", PROFILE_COUNT);
+    // Set up MQTT client
+    let mut mqttoptions = MqttOptions::new("service_a", MQTT_BROKER, MQTT_PORT);
+    mqttoptions.set_keep_alive(Duration::from_secs(30));
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+
+    // Subscribe to response topics from B and C
+    client.subscribe("service_a/response/b", QoS::AtLeastOnce).await.unwrap();
+    client.subscribe("service_a/response/c", QoS::AtLeastOnce).await.unwrap();
+
+    // Generate profiles
+    let profiles: Vec<Profile> = (0..PROFILE_COUNT).map(|_| random_profile()).collect();
+
+    // Channels to collect responses
+    let (b_tx, mut b_rx) = mpsc::channel::<(String, Vec<Account>)>(PROFILE_COUNT);
+    let (c_tx, mut c_rx) = mpsc::channel::<(String, Vec<ServiceRecord>)>(PROFILE_COUNT);
+
+    // Spawn task to process MQTT responses
+    tokio::spawn(async move {
+        while let Ok(event) = eventloop.poll().await {
+            if let Event::Incoming(Packet::Publish(publish)) = event {
+                let topic = publish.topic.clone();
+                let payload = publish.payload;
+                if topic == "service_a/response/b" {
+                    if let Ok((email, accounts)) = serde_json::from_slice::<(String, Vec<Account>)>(&payload) {
+                        let _ = b_tx.send((email, accounts)).await;
+                    }
+                } else if topic == "service_a/response/c" {
+                    if let Ok((email, services)) = serde_json::from_slice::<(String, Vec<ServiceRecord>)>(&payload) {
+                        let _ = c_tx.send((email, services)).await;
+                    }
+                }
+            }
+        }
+    });
+
+    // For each profile, send to B and C
+    for profile in &profiles {
+        let payload = serde_json::to_vec(profile).unwrap();
+        client.publish("service_b/request", QoS::AtLeastOnce, false, &payload).await.unwrap();
+        client.publish("service_c/request", QoS::AtLeastOnce, false, &payload).await.unwrap();
+    }
+
+    // Collect responses and aggregate
+    let mut b_results: HashMap<String, Vec<Account>> = HashMap::new();
+    let mut c_results: HashMap<String, Vec<ServiceRecord>> = HashMap::new();
+    for _ in 0..PROFILE_COUNT {
+        if let Ok((email, accounts)) = timeout(Duration::from_millis(TIMEOUT_MS), b_rx.recv()).await {
+            if let Some((email, accounts)) = accounts {
+                b_results.insert(email, accounts);
+            }
+        }
+        if let Ok((email, services)) = timeout(Duration::from_millis(TIMEOUT_MS), c_rx.recv()).await {
+            if let Some((email, services)) = services {
+                c_results.insert(email, services);
+            }
+        }
+    }
+    println!("[Service A] Collected {} B and {} C responses", b_results.len(), c_results.len());
+
+    // Forward aggregated results to D
+    for profile in &profiles {
+        let agg = AggregatedData {
+            profile: profile.clone(),
+            accounts: b_results.get(&profile.email).cloned().unwrap_or_default(),
+            services: c_results.get(&profile.email).cloned().unwrap_or_default(),
+        };
+        let payload = serde_json::to_vec(&agg).unwrap();
+        client.publish("service_d/request", QoS::AtLeastOnce, false, &payload).await.unwrap();
+    }
+    println!("[Service A] Forwarded aggregated results to D");
+}

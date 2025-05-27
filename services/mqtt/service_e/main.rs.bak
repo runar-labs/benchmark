@@ -1,0 +1,63 @@
+//! Service E for MQTT benchmark
+//
+// Intention: Receives AggregatedData from Service D, logs each record (profile email, number of accounts, number of services).
+//
+// Architectural boundaries:
+// - Communicates only via MQTT broker (no direct service-to-service communication)
+// - All data types are defined in services/common/types.rs
+// - Handles errors and logs all major steps
+//
+// This implementation demonstrates the intended inter-service workflow for benchmarking.
+
+use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Packet};
+use serde_json;
+use std::time::Duration;
+use tokio::time::timeout;
+use services::common::types::AggregatedData;
+
+const MQTT_BROKER: &str = "mqtt_broker";
+const MQTT_PORT: u16 = 1883;
+const TIMEOUT_MS: u64 = 5000;
+
+#[tokio::main]
+async fn main() {
+    println!("[Service E] Starting and subscribing to requests");
+    let mut mqttoptions = MqttOptions::new("service_e", MQTT_BROKER, MQTT_PORT);
+    mqttoptions.set_keep_alive(Duration::from_secs(30));
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+
+    client.subscribe("service_e/request", QoS::AtLeastOnce).await.unwrap();
+
+    loop {
+        match timeout(Duration::from_millis(TIMEOUT_MS), eventloop.poll()).await {
+            Ok(Ok(Event::Incoming(Packet::Publish(publish)))) => {
+                let payload = publish.payload;
+                match serde_json::from_slice::<AggregatedData>(&payload) {
+                    Ok(data) => {
+                        println!("[Service E] Received record for profile {} ({} accounts, {} services)", data.profile.email, data.accounts.len(), data.services.len());
+                    }
+                    Err(e) => {
+                        eprintln!("[Service E] Failed to deserialize AggregatedData: {}", e);
+                    }
+                }
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                eprintln!("[Service E] Eventloop error: {}", e);
+            }
+            Err(_) => {
+                eprintln!("[Service E] Timeout waiting for request");
+            }
+        }
+    }
+}
+ Service E for MQTT benchmark
+//
+// Intention: Receives data from Service D, appends final data, and completes the pipeline.
+
+// NOTE: This is a stub implementation for architectural demonstration.
+// Actual MQTT logic, error handling, and metrics will be implemented in the next phase.
+
+fn main() {
+    println!("Service E started. Would receive data from D and complete the pipeline.");
+}

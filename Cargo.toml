@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "services/common",
+    "services/mqtt/service_a",
+    "services/mqtt/service_b",
+    "services/mqtt/service_c",
+    "services/mqtt/service_d",
+    "services/mqtt/service_e",
+    "services/mqtt/listgener"
+]
